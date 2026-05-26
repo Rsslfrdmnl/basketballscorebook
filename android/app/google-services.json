@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "429297447925",
+    "project_id": "basketball-scorebook-8e490",
+    "storage_bucket": "basketball-scorebook-8e490.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:429297447925:android:ddd124d3dc95fd65dea6bc",
+        "android_client_info": {
+          "package_name": "com.example.basketball_scorebook"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAqoFoU5_Jo6vL5lSXzvLBRUK70Vtefvi0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
