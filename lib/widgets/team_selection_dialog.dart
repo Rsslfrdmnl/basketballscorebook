@@ -19,58 +19,105 @@ class TeamSelectionDialog extends StatefulWidget {
 class _TeamSelectionDialogState extends State<TeamSelectionDialog> {
   QueryDocumentSnapshot? homeTeam;
   QueryDocumentSnapshot? awayTeam;
+  String selectedDivision = '14U';
+
+  // Filter teams by division
+  List<QueryDocumentSnapshot> get _filteredTeams {
+    return widget.teams.where((team) {
+      final data = team.data() as Map<String, dynamic>;
+      String division = data['division'] ?? '14U';
+      return division == selectedDivision;
+    }).toList();
+  }
 
   @override
-Widget build(BuildContext context) {
-  return Dialog(
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(20),
-    ),
-    backgroundColor: AppTheme.surfaceDark,
-    insetPadding: const EdgeInsets.all(8),
-    child: Container(
-      constraints: const BoxConstraints(maxHeight: 400),
-      padding: const EdgeInsets.all(16),
-      child: SingleChildScrollView(
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+      ),
+      backgroundColor: AppTheme.surfaceDark,
+      child: Container(
+        padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Header with icon
+            // Header with gradient background
             Container(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: AppTheme.accentGold.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppTheme.accentGold.withOpacity(0.2)),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    AppTheme.accentGold.withOpacity(0.15),
+                    AppTheme.accentGold.withOpacity(0.05),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: AppTheme.accentGold.withOpacity(0.2),
+                ),
               ),
-              child: const Icon(
-                Icons.sports_basketball,
-                size: 24,
-                color: AppTheme.accentGold,
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.sports_basketball,
+                    size: 32,
+                    color: AppTheme.accentGold,
+                  ),
+                  SizedBox(width: 12),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Select Teams',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      Text(
+                        'Choose division and match up',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 12),
-            const Text(
-              'Select Teams',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w900,
-                color: AppTheme.textPrimary,
-                letterSpacing: 1,
-              ),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Choose home and away teams',
-              style: TextStyle(
-                fontSize: 12,
-                color: AppTheme.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 16),
             
-            // Home Team Selection - Compact
-            _buildCompactDropdown(
+            const SizedBox(height: 20),
+            
+            // Division Selector - Premium Toggle
+            Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: AppTheme.secondaryDark,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _buildDivisionOption('14U', AppTheme.accentBlue),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: _buildDivisionOption('16U', AppTheme.accentGreen),
+                  ),
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+            
+            // Home Team Selection
+            _buildTeamDropdown(
               label: 'Home Team',
               value: homeTeam,
               icon: Icons.home,
@@ -85,10 +132,10 @@ Widget build(BuildContext context) {
               },
             ),
             
-            const SizedBox(height: 12),
+            const SizedBox(height: 16),
             
-            // Away Team Selection - Compact
-            _buildCompactDropdown(
+            // Away Team Selection
+            _buildTeamDropdown(
               label: 'Away Team',
               value: awayTeam,
               icon: Icons.flight_takeoff,
@@ -103,7 +150,7 @@ Widget build(BuildContext context) {
               },
             ),
             
-            const SizedBox(height: 16),
+            const SizedBox(height: 24),
             
             // Action buttons
             Row(
@@ -113,15 +160,15 @@ Widget build(BuildContext context) {
                     onPressed: () => Navigator.pop(context),
                     style: TextButton.styleFrom(
                       foregroundColor: AppTheme.textMuted,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                     ),
-                    child: const Text('Cancel', style: TextStyle(fontSize: 13)),
+                    child: const Text('Cancel'),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 12),
                 Expanded(
                   child: ElevatedButton(
                     onPressed: (homeTeam != null && awayTeam != null)
@@ -133,15 +180,15 @@ Widget build(BuildContext context) {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.accentBlue,
                       foregroundColor: AppTheme.textPrimary,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                     ),
                     child: const Text(
-                      'Start',
+                      'Start Game',
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: 16,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
@@ -152,85 +199,53 @@ Widget build(BuildContext context) {
           ],
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 
-// Add this compact dropdown helper
-Widget _buildCompactDropdown({
-  required String label,
-  required QueryDocumentSnapshot? value,
-  required IconData icon,
-  required Color color,
-  required Function(QueryDocumentSnapshot?) onChanged,
-}) {
-  return Row(
-    children: [
-      Container(
-        padding: const EdgeInsets.all(4),
+  Widget _buildDivisionOption(String division, Color color) {
+    final isSelected = selectedDivision == division;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          selectedDivision = division;
+          homeTeam = null;
+          awayTeam = null;
+        });
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.15),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Icon(icon, color: color, size: 14),
-      ),
-      const SizedBox(width: 8),
-      SizedBox(
-        width: 80,
-        child: Text(
-          label,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w700,
-            color: AppTheme.textPrimary,
+          color: isSelected ? color.withOpacity(0.15) : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected ? color.withOpacity(0.5) : Colors.white.withOpacity(0.05),
+            width: isSelected ? 2 : 1,
           ),
-          overflow: TextOverflow.ellipsis,
         ),
-      ),
-      Expanded(
-        child: Container(
-          height: 32,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          decoration: BoxDecoration(
-            color: AppTheme.secondaryDark,
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(
-              color: value != null ? color.withOpacity(0.5) : Colors.white10,
-              width: value != null ? 2 : 1,
-            ),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<QueryDocumentSnapshot>(
-              value: value,
-              isExpanded: true,
-              dropdownColor: AppTheme.surfaceDark,
-              hint: Text(
-                'Select',
-                style: TextStyle(color: AppTheme.textMuted, fontSize: 11),
+        child: Center(
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.people,
+                size: 16,
+                color: isSelected ? color : AppTheme.textMuted,
               ),
-              items: widget.teams.map((team) {
-                return DropdownMenuItem(
-                  value: team,
-                  child: Text(
-                    team['name'],
-                    style: const TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontSize: 11,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                );
-              }).toList(),
-              onChanged: onChanged,
-              icon: Icon(Icons.arrow_drop_down, color: color, size: 16),
-              style: const TextStyle(color: AppTheme.textPrimary),
-            ),
+              const SizedBox(width: 8),
+              Text(
+                division,
+                style: TextStyle(
+                  color: isSelected ? AppTheme.textPrimary : AppTheme.textMuted,
+                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                  fontSize: 14,
+                ),
+              ),
+            ],
           ),
         ),
       ),
-    ],
-  );
-}
+    );
+  }
 
   Widget _buildTeamDropdown({
     required String label,
@@ -247,30 +262,30 @@ Widget _buildCompactDropdown({
             Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: color.withOpacity(0.15),
+                color: color.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(icon, color: color, size: 18),
+              child: Icon(icon, color: color, size: 16),
             ),
             const SizedBox(width: 10),
             Text(
               label,
               style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
                 color: AppTheme.textPrimary,
               ),
             ),
           ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
             color: AppTheme.secondaryDark,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: value != null ? color.withOpacity(0.5) : Colors.white10,
+              color: value != null ? color.withOpacity(0.5) : Colors.white.withOpacity(0.1),
               width: value != null ? 2 : 1,
             ),
           ),
@@ -283,14 +298,14 @@ Widget _buildCompactDropdown({
                 'Select $label',
                 style: TextStyle(color: AppTheme.textMuted),
               ),
-              items: widget.teams.map((team) {
+              items: _filteredTeams.map((team) {
                 return DropdownMenuItem(
                   value: team,
                   child: Text(
                     team['name'],
                     style: const TextStyle(
                       color: AppTheme.textPrimary,
-                      fontSize: 15,
+                      fontSize: 14,
                     ),
                   ),
                 );

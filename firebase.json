@@ -1,1 +1,37 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"basketball-scorebook-8e490","appId":"1:429297447925:android:ddd124d3dc95fd65dea6bc","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"basketball-scorebook-8e490","configurations":{"android":"1:429297447925:android:ddd124d3dc95fd65dea6bc","ios":"1:429297447925:ios:9b237b895458b4d3dea6bc","web":"1:429297447925:web:5fb713988d68e584dea6bc"}}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "basketball-scorebook-8e490",
+          "appId": "1:429297447925:android:ddd124d3dc95fd65dea6bc",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "basketball-scorebook-8e490",
+          "configurations": {
+            "android": "1:429297447925:android:ddd124d3dc95fd65dea6bc",
+            "ios": "1:429297447925:ios:9b237b895458b4d3dea6bc",
+            "web": "1:429297447925:web:5fb713988d68e584dea6bc"
+          }
+        }
+      }
+    }
+  },
+  "hosting": {
+    "public": "build/web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}

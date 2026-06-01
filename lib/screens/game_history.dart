@@ -1,19 +1,47 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../theme/app_theme.dart';
 
-class GameHistory extends StatelessWidget {
+class GameHistory extends StatefulWidget {
   const GameHistory({super.key});
+
+  @override
+  State<GameHistory> createState() => _GameHistoryState();
+}
+
+class _GameHistoryState extends State<GameHistory> {
+  String selectedDivision = '14U';
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Game History'),
-        backgroundColor: const Color.fromARGB(255, 228, 148, 28),
+        backgroundColor: AppTheme.primaryDark,
+        elevation: 0,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(50),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: Colors.white.withOpacity(0.05)),
+              ),
+            ),
+            child: Row(
+              children: [
+                _buildDivisionTab('14U', Icons.child_care, AppTheme.accentBlue),
+                const SizedBox(width: 12),
+                _buildDivisionTab('16U', Icons.people, AppTheme.accentGreen),
+              ],
+            ),
+          ),
+        ),
       ),
       body: StreamBuilder<QuerySnapshot>(
         stream: FirebaseFirestore.instance
             .collection('games')
+            .where('division', isEqualTo: selectedDivision)
             .orderBy('date', descending: true)
             .snapshots(),
         builder: (context, snapshot) {
@@ -24,55 +52,128 @@ class GameHistory extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.data!.docs.isEmpty) {
-            return const Center(child: Text('No games played yet'));
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white.withOpacity(0.05),
+                    ),
+                    child: const Icon(
+                      Icons.history,
+                      size: 48,
+                      color: AppTheme.textMuted,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No games in ${selectedDivision} division',
+                    style: const TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 16,
+                    ),
+                  ),
+                ],
+              ),
+            );
           }
           
           return ListView.builder(
+            padding: const EdgeInsets.all(12),
             itemCount: snapshot.data!.docs.length,
             itemBuilder: (context, index) {
               final game = snapshot.data!.docs[index];
               final data = game.data() as Map<String, dynamic>;
               
-              // Determine winner
               final homeScore = data['homeScore'] ?? 0;
               final awayScore = data['awayScore'] ?? 0;
               final homeTeam = data['homeTeam'] ?? 'Home';
               final awayTeam = data['awayTeam'] ?? 'Away';
               final date = data['date']?.toDate() ?? DateTime.now();
+              final quarter = data['quarter'] ?? 1;
               
               String winnerText;
               Color winnerColor;
               if (homeScore > awayScore) {
                 winnerText = '$homeTeam Wins!';
-                winnerColor = Colors.green;
+                winnerColor = AppTheme.accentGreen;
               } else if (awayScore > homeScore) {
                 winnerText = '$awayTeam Wins!';
-                winnerColor = Colors.green;
+                winnerColor = AppTheme.accentGreen;
               } else {
                 winnerText = 'Tie Game';
-                winnerColor = Colors.orange;
+                winnerColor = AppTheme.accentGold;
               }
               
               return Card(
-                margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                margin: const EdgeInsets.symmetric(vertical: 4),
+                color: AppTheme.cardDark,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(
+                    color: Colors.white.withOpacity(0.05),
+                    width: 1,
+                  ),
+                ),
                 child: ListTile(
-                  title: Text('$homeTeam vs $awayTeam'),
+                  contentPadding: const EdgeInsets.all(12),
+                  title: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppTheme.accentBlue.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: AppTheme.accentBlue.withOpacity(0.2)),
+                        ),
+                        child: Text(
+                          'Q$quarter',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.accentBlue,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '$homeTeam vs $awayTeam',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
                   subtitle: Text(
-                    '${date.month}/${date.day}/${date.year} • Q${data['quarter']}',
+                    '${date.month}/${date.day}/${date.year}',
+                    style: const TextStyle(
+                      color: AppTheme.textMuted,
+                      fontSize: 12,
+                    ),
                   ),
                   trailing: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Text(
                         '$homeScore - $awayScore',
-                        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                          color: AppTheme.accentGold,
+                        ),
                       ),
+                      const SizedBox(height: 2),
                       Text(
                         winnerText,
                         style: TextStyle(
-                          fontSize: 12,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
                           color: winnerColor,
-                          fontWeight: FontWeight.bold,
                         ),
                       ),
                     ],
@@ -87,7 +188,7 @@ class GameHistory extends StatelessWidget {
                           awayTeam: awayTeam,
                           homeScore: homeScore,
                           awayScore: awayScore,
-                          quarter: data['quarter'],
+                          quarter: quarter,
                           date: date,
                           homeTeamId: data['homeTeamId'] ?? '',
                           awayTeamId: data['awayTeamId'] ?? '',
@@ -100,6 +201,53 @@ class GameHistory extends StatelessWidget {
             },
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildDivisionTab(String division, IconData icon, Color color) {
+    final isSelected = selectedDivision == division;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          setState(() {
+            selectedDivision = division;
+          });
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: isSelected 
+              ? color.withOpacity(0.1)
+              : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isSelected 
+                ? color.withOpacity(0.5)
+                : Colors.white.withOpacity(0.05),
+              width: isSelected ? 2 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                color: isSelected ? color : AppTheme.textMuted,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                division,
+                style: TextStyle(
+                  color: isSelected ? AppTheme.textPrimary : AppTheme.textMuted,
+                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -244,7 +392,8 @@ class _GameDetailScreenState extends State<GameDetailScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text('${widget.homeTeam} vs ${widget.awayTeam}'),
-        backgroundColor: const Color.fromARGB(255, 228, 148, 28),
+        backgroundColor: AppTheme.primaryDark,
+        elevation: 0,
       ),
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -254,34 +403,70 @@ class _GameDetailScreenState extends State<GameDetailScreen> {
                   // Score header
                   Container(
                     padding: const EdgeInsets.all(20),
-                    color: Colors.grey[900],
+                    decoration: BoxDecoration(
+                      color: AppTheme.surfaceDark,
+                      border: Border(
+                        bottom: BorderSide(color: Colors.white.withOpacity(0.05)),
+                      ),
+                    ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Column(
                           children: [
-                            Text(widget.homeTeam, style: const TextStyle(color: Colors.white, fontSize: 18)),
+                            Text(
+                              widget.homeTeam,
+                              style: const TextStyle(
+                                color: AppTheme.homeTeam,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                             Text(
                               widget.homeScore.toString(),
-                              style: const TextStyle(color: Colors.blue, fontSize: 32, fontWeight: FontWeight.bold),
+                              style: const TextStyle(
+                                color: AppTheme.textPrimary,
+                                fontSize: 32,
+                                fontWeight: FontWeight.w900,
+                              ),
                             ),
                           ],
                         ),
                         Column(
                           children: [
-                            Text('Q${widget.quarter}', style: const TextStyle(color: Colors.white, fontSize: 18)),
+                            Text(
+                              'Q${widget.quarter}',
+                              style: const TextStyle(
+                                color: AppTheme.textMuted,
+                                fontSize: 18,
+                              ),
+                            ),
                             Text(
                               '${widget.date.month}/${widget.date.day}/${widget.date.year}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 14),
+                              style: const TextStyle(
+                                color: AppTheme.textMuted,
+                                fontSize: 14,
+                              ),
                             ),
                           ],
                         ),
                         Column(
                           children: [
-                            Text(widget.awayTeam, style: const TextStyle(color: Colors.white, fontSize: 18)),
+                            Text(
+                              widget.awayTeam,
+                              style: const TextStyle(
+                                color: AppTheme.awayTeam,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                             Text(
                               widget.awayScore.toString(),
-                              style: const TextStyle(color: Colors.red, fontSize: 32, fontWeight: FontWeight.bold),
+                              style: const TextStyle(
+                                color: AppTheme.textPrimary,
+                                fontSize: 32,
+                                fontWeight: FontWeight.w900,
+                              ),
                             ),
                           ],
                         ),
@@ -297,28 +482,42 @@ class _GameDetailScreenState extends State<GameDetailScreen> {
                       margin: const EdgeInsets.symmetric(horizontal: 16),
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: Colors.amber[100],
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Colors.amber.withOpacity(0.15),
+                            Colors.amber.withOpacity(0.05),
+                          ],
+                        ),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.amber, width: 2),
+                        border: Border.all(color: Colors.amber.withOpacity(0.3)),
                       ),
                       child: Column(
                         children: [
-                          Text(
-  '🏆 MVP of the Game',
-  style: TextStyle(
-    fontSize: 20, 
-    fontWeight: FontWeight.bold, 
-    color: Colors.amber[800],
-  ),
-),
+                          const Text(
+                            '🏆 MVP of the Game',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w900,
+                              color: Colors.amber,
+                            ),
+                          ),
                           const SizedBox(height: 8),
                           Text(
                             mvpData!['name'],
-                            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.textPrimary,
+                            ),
                           ),
                           Text(
-                            '${mvpData!['team']} • ${mvpData!['points']} points • ${mvpData!['fouls']} fouls',
-                            style: const TextStyle(fontSize: 16),
+                            '${mvpData!['team']} • ${mvpData!['points']} pts • ${mvpData!['fouls']} fls',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: AppTheme.textSecondary,
+                            ),
                           ),
                         ],
                       ),
@@ -328,11 +527,18 @@ class _GameDetailScreenState extends State<GameDetailScreen> {
                       margin: const EdgeInsets.symmetric(horizontal: 16),
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: Colors.grey[200],
+                        color: AppTheme.surfaceDark,
                         borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white.withOpacity(0.05)),
                       ),
                       child: const Center(
-                        child: Text('No MVP data available', style: TextStyle(fontSize: 16)),
+                        child: Text(
+                          'No MVP data available',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: AppTheme.textMuted,
+                          ),
+                        ),
                       ),
                     ),
                   
@@ -346,43 +552,68 @@ class _GameDetailScreenState extends State<GameDetailScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            'All Player Stats',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                            'Player Stats',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.textPrimary,
+                            ),
                           ),
                           const SizedBox(height: 8),
                           ...(mvpData!['players'] as Map<String, dynamic>).entries.map((entry) {
                             final player = entry.value;
                             return Card(
                               margin: const EdgeInsets.symmetric(vertical: 2),
+                              color: AppTheme.cardDark,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                side: BorderSide(color: Colors.white.withOpacity(0.05)),
+                              ),
                               child: ListTile(
-                                title: Text(player['name']),
-                                subtitle: Text(player['team']),
+                                leading: CircleAvatar(
+                                  backgroundColor: player['points'] == mvpData!['points'] 
+                                      ? Colors.amber.withOpacity(0.2)
+                                      : AppTheme.surfaceDark,
+                                  child: Text(
+                                    player['name'][0].toUpperCase(),
+                                    style: TextStyle(
+                                      color: player['points'] == mvpData!['points'] 
+                                          ? Colors.amber
+                                          : AppTheme.textMuted,
+                                    ),
+                                  ),
+                                ),
+                                title: Text(
+                                  player['name'],
+                                  style: const TextStyle(
+                                    color: AppTheme.textPrimary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  player['team'],
+                                  style: const TextStyle(
+                                    color: AppTheme.textSecondary,
+                                  ),
+                                ),
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     Text(
                                       '${player['points']} pts',
-                                      style: const TextStyle(fontWeight: FontWeight.bold),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        color: AppTheme.accentGold,
+                                      ),
                                     ),
                                     const SizedBox(width: 10),
                                     Text(
                                       '${player['fouls']} fls',
-                                      style: const TextStyle(color: Colors.red),
+                                      style: const TextStyle(
+                                        color: AppTheme.accentRed,
+                                      ),
                                     ),
                                   ],
-                                ),
-                                leading: CircleAvatar(
-                                  backgroundColor: player['points'] == mvpData!['points'] 
-                                      ? Colors.amber 
-                                      : Colors.grey[300],
-                                  child: Text(
-                                    player['name'][0].toUpperCase(),
-                                    style: TextStyle(
-                                      color: player['points'] == mvpData!['points'] 
-                                          ? Colors.black 
-                                          : Colors.grey[700],
-                                    ),
-                                  ),
                                 ),
                               ),
                             );

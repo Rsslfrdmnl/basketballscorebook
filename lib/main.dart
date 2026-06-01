@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -9,9 +10,13 @@ import 'screens/scorebook_screen.dart';
 import 'screens/game_history.dart';
 import 'screens/mvp_leaderboard.dart';
 import 'screens/team_standings.dart';
+import 'screens/live_game_viewer.dart';
+import 'screens/public_home.dart';
 import 'theme/app_theme.dart';
 import 'widgets/team_selection_dialog.dart';
-import 'screens/auth_screen.dart';
+
+// Global navigator key for safe navigation
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,7 +36,8 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Scorebook Pro',
       theme: AppTheme.darkTheme,
-      home: const AuthScreen(),
+      navigatorKey: navigatorKey,  // Add the navigator key
+      home: const PublicHome(),
       debugShowCheckedModeBanner: false,
     );
   }
@@ -47,6 +53,7 @@ class ScorebookHome extends StatefulWidget {
 class _ScorebookHomeState extends State<ScorebookHome> {
   bool isAdmin = false;
   bool isLoading = true;
+  String username = '';
 
   @override
   void initState() {
@@ -64,11 +71,13 @@ class _ScorebookHomeState extends State<ScorebookHome> {
       if (doc.exists) {
         setState(() {
           isAdmin = doc['role'] == 'admin';
+          username = doc['username'] ?? 'User';
           isLoading = false;
         });
       } else {
         setState(() {
           isAdmin = false;
+          username = 'User';
           isLoading = false;
         });
       }
@@ -192,78 +201,78 @@ class _ScorebookHomeState extends State<ScorebookHome> {
                 const SizedBox(height: 30),
                 
                 // Manage Teams - Admin only
-if (isAdmin)
-  _buildMenuButton(
-    context,
-    icon: Icons.group_add,
-    label: 'Manage Teams',
-    color: AppTheme.accentBlue,
-    onTap: () {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => const TeamManagement(),
-        ),
-      );
-    },
-  ),
+                if (isAdmin)
+                  _buildMenuButton(
+                    context,
+                    icon: Icons.group_add,
+                    label: 'Manage Teams',
+                    color: AppTheme.accentBlue,
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const TeamManagement(),
+                        ),
+                      );
+                    },
+                  ),
 
-// Start Game - Both roles
-_buildMenuButton(
-  context,
-  icon: Icons.play_arrow,
-  label: 'Start Game',
-  color: AppTheme.accentGreen,
-  onTap: () => _startGame(context),
-),
+                // Start Game - Both roles
+                _buildMenuButton(
+                  context,
+                  icon: Icons.play_arrow,
+                  label: 'Start Game',
+                  color: AppTheme.accentGreen,
+                  onTap: () => _startGame(),
+                ),
 
-// Game History - Both roles
-_buildMenuButton(
-  context,
-  icon: Icons.history,
-  label: 'Game History',
-  color: AppTheme.accentPurple,
-  onTap: () {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const GameHistory(),
-      ),
-    );
-  },
-),
+                // Game History - Both roles
+                _buildMenuButton(
+                  context,
+                  icon: Icons.history,
+                  label: 'Game History',
+                  color: AppTheme.accentPurple,
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const GameHistory(),
+                      ),
+                    );
+                  },
+                ),
 
-// MVP Leaderboard - Both roles
-_buildMenuButton(
-  context,
-  icon: Icons.star,
-  label: 'MVP Leaderboard',
-  color: AppTheme.accentGold,
-  onTap: () {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const MVPLeaderboard(),
-      ),
-    );
-  },
-),
+                // MVP Leaderboard - Both roles
+                _buildMenuButton(
+                  context,
+                  icon: Icons.star,
+                  label: 'MVP Leaderboard',
+                  color: AppTheme.accentGold,
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const MVPLeaderboard(),
+                      ),
+                    );
+                  },
+                ),
 
-// Team Standings - Both roles
-_buildMenuButton(
-  context,
-  icon: Icons.leaderboard,
-  label: 'Team Standings',
-  color: AppTheme.accentOrange,
-  onTap: () {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const TeamStandings(),
-      ),
-    );
-  },
-),     
+                // Team Standings - Both roles
+                _buildMenuButton(
+                  context,
+                  icon: Icons.leaderboard,
+                  label: 'Team Standings',
+                  color: AppTheme.accentOrange,
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const TeamStandings(),
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
           ),
@@ -312,13 +321,13 @@ _buildMenuButton(
     );
   }
 
-  void _startGame(BuildContext context) async {
+  void _startGame() async {
     final snapshot = await FirebaseFirestore.instance
         .collection('teams')
         .get();
     
     if (snapshot.docs.length < 2) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(navigatorKey.currentContext!).showSnackBar(
         const SnackBar(
           content: Text('Need at least 2 teams to start a game!'),
           backgroundColor: AppTheme.accentRed,
@@ -327,22 +336,51 @@ _buildMenuButton(
       return;
     }
     
+    // Use the global navigator key for dialog
     showDialog(
-      context: context,
-      builder: (context) => TeamSelectionDialog(
+      context: navigatorKey.currentContext!,
+      builder: (dialogContext) => TeamSelectionDialog(
         teams: snapshot.docs,
-        onTeamsSelected: (homeTeam, awayTeam) {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ScorebookScreen(
-                homeTeamId: homeTeam.id,
-                awayTeamId: awayTeam.id,
-                homeTeamName: homeTeam['name'],
-                awayTeamName: awayTeam['name'],
+        onTeamsSelected: (homeTeam, awayTeam) async {
+          // Close the dialog
+          Navigator.pop(dialogContext);
+          
+          try {
+            // Create the game
+            final gameRef = await FirebaseFirestore.instance.collection('games').add({
+              'homeTeam': homeTeam['name'],
+              'awayTeam': awayTeam['name'],
+              'homeTeamId': homeTeam.id,
+              'awayTeamId': awayTeam.id,
+              'homeScore': 0,
+              'awayScore': 0,
+              'quarter': 1,
+              'division': homeTeam['division'] ?? '14U',
+              'status': 'in_progress',
+              'date': DateTime.now(),
+            });
+            
+            // Use the global navigator key to navigate
+            navigatorKey.currentState?.push(
+              MaterialPageRoute(
+                builder: (context) => ScorebookScreen(
+                  homeTeamId: homeTeam.id,
+                  awayTeamId: awayTeam.id,
+                  homeTeamName: homeTeam['name'],
+                  awayTeamName: awayTeam['name'],
+                  gameId: gameRef.id,
+                ),
               ),
-            ),
-          );
+            );
+          } catch (e) {
+            debugPrint('❌ Error: $e');
+            ScaffoldMessenger.of(navigatorKey.currentContext!).showSnackBar(
+              SnackBar(
+                content: Text('Error: $e'),
+                backgroundColor: AppTheme.accentRed,
+              ),
+            );
+          }
         },
       ),
     );

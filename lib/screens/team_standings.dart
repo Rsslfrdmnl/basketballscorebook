@@ -2,38 +2,80 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../theme/app_theme.dart';
 
-class TeamStandings extends StatelessWidget {
+class TeamStandings extends StatefulWidget {
   const TeamStandings({super.key});
+
+  @override
+  State<TeamStandings> createState() => _TeamStandingsState();
+}
+
+class _TeamStandingsState extends State<TeamStandings> {
+  String selectedDivision = '14U';
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Team Standings'),
-        backgroundColor: const Color.fromARGB(255, 228, 148, 28),
+        backgroundColor: AppTheme.primaryDark,
         elevation: 0,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(50),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: Colors.white.withOpacity(0.05)),
+              ),
+            ),
+            child: Row(
+              children: [
+                _buildDivisionTab('14U', Icons.child_care, AppTheme.accentBlue),
+                const SizedBox(width: 12),
+                _buildDivisionTab('16U', Icons.people, AppTheme.accentGreen),
+              ],
+            ),
+          ),
+        ),
       ),
       body: StreamBuilder<QuerySnapshot>(
         stream: FirebaseFirestore.instance
             .collection('games')
             .where('status', isEqualTo: 'completed')
+            .where('division', isEqualTo: selectedDivision)
             .snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            debugPrint('❌ TeamStandings ERROR: ${snapshot.error}');
             return const Center(child: Text('Error loading standings'));
           }
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.data!.docs.isEmpty) {
-            return const Center(
+            return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.info, size: 48, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text('No completed games yet'),
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white.withOpacity(0.05),
+                    ),
+                    child: const Icon(
+                      Icons.leaderboard,
+                      size: 48,
+                      color: AppTheme.textMuted,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No games in ${selectedDivision} division',
+                    style: const TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 16,
+                    ),
+                  ),
                 ],
               ),
             );
@@ -50,67 +92,60 @@ class TeamStandings extends StatelessWidget {
             final awayScore = data['awayScore'] ?? 0;
             final homeTeamId = data['homeTeamId'] ?? '';
             final awayTeamId = data['awayTeamId'] ?? '';
+            final division = data['division'] ?? '14U';
 
-            // Initialize teams if not exist
             if (!standings.containsKey(homeTeamId)) {
               standings[homeTeamId] = {
                 'name': homeTeam,
                 'id': homeTeamId,
-                'wins': 0,  // Changed to num to support 0.5
-                'losses': 0,  // Changed to num
+                'wins': 0,
+                'losses': 0,
                 'pointsScored': 0,
                 'pointsAllowed': 0,
                 'gamesPlayed': 0,
+                'division': division,
               };
             }
             if (!standings.containsKey(awayTeamId)) {
               standings[awayTeamId] = {
                 'name': awayTeam,
                 'id': awayTeamId,
-                'wins': 0,  // Changed to num
-                'losses': 0,  // Changed to num
+                'wins': 0,
+                'losses': 0,
                 'pointsScored': 0,
                 'pointsAllowed': 0,
                 'gamesPlayed': 0,
+                'division': division,
               };
             }
 
-            // Update stats
             if (homeScore > awayScore) {
-              // Home team wins
               standings[homeTeamId]!['wins'] = (standings[homeTeamId]!['wins'] as num) + 1;
               standings[awayTeamId]!['losses'] = (standings[awayTeamId]!['losses'] as num) + 1;
             } else if (awayScore > homeScore) {
-              // Away team wins
               standings[awayTeamId]!['wins'] = (standings[awayTeamId]!['wins'] as num) + 1;
               standings[homeTeamId]!['losses'] = (standings[homeTeamId]!['losses'] as num) + 1;
             } else {
-              // Tie - count as half win/half loss
               standings[homeTeamId]!['wins'] = (standings[homeTeamId]!['wins'] as num) + 0.5;
               standings[homeTeamId]!['losses'] = (standings[homeTeamId]!['losses'] as num) + 0.5;
               standings[awayTeamId]!['wins'] = (standings[awayTeamId]!['wins'] as num) + 0.5;
               standings[awayTeamId]!['losses'] = (standings[awayTeamId]!['losses'] as num) + 0.5;
             }
 
-            // Points
             standings[homeTeamId]!['pointsScored'] = (standings[homeTeamId]!['pointsScored'] as int) + homeScore;
             standings[homeTeamId]!['pointsAllowed'] = (standings[homeTeamId]!['pointsAllowed'] as int) + awayScore;
             standings[awayTeamId]!['pointsScored'] = (standings[awayTeamId]!['pointsScored'] as int) + awayScore;
             standings[awayTeamId]!['pointsAllowed'] = (standings[awayTeamId]!['pointsAllowed'] as int) + homeScore;
             
-            // Games played
             standings[homeTeamId]!['gamesPlayed'] = (standings[homeTeamId]!['gamesPlayed'] as int) + 1;
             standings[awayTeamId]!['gamesPlayed'] = (standings[awayTeamId]!['gamesPlayed'] as int) + 1;
           }
 
-          // Convert to list and sort by wins (descending)
           var sortedList = standings.values.toList();
           sortedList.sort((a, b) {
-            // Sort by wins first, then by win percentage if tied
             if (b['wins'] != a['wins']) {
               return (b['wins'] as num).compareTo(a['wins'] as num);
             }
-            // If wins are tied, sort by points scored
             return (b['pointsScored'] as int).compareTo(a['pointsScored'] as int);
           });
 
@@ -128,11 +163,9 @@ class TeamStandings extends StatelessWidget {
               final pointsAllowed = team['pointsAllowed'] as int;
               final pointDiff = pointsScored - pointsAllowed;
 
-              // Format wins/losses to show .5 for ties
               String winsDisplay = wins % 1 == 0 ? wins.toInt().toString() : wins.toString();
               String lossesDisplay = losses % 1 == 0 ? losses.toInt().toString() : losses.toString();
 
-              // Medal colors for top 3
               Color rankColor;
               IconData rankIcon;
               if (rank == 1) {
@@ -140,10 +173,10 @@ class TeamStandings extends StatelessWidget {
                 rankIcon = Icons.star;
               } else if (rank == 2) {
                 rankColor = Colors.grey;
-                rankIcon = Icons.star_half;
+                rankIcon = Icons.emoji_events;
               } else if (rank == 3) {
                 rankColor = Colors.brown;
-                rankIcon = Icons.star_border;
+                rankIcon = Icons.emoji_events;
               } else {
                 rankColor = Colors.grey[700]!;
                 rankIcon = Icons.circle;
@@ -152,22 +185,34 @@ class TeamStandings extends StatelessWidget {
               return Card(
                 margin: const EdgeInsets.symmetric(vertical: 4),
                 color: AppTheme.cardDark,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(
+                    color: rank == 1 
+                      ? Colors.amber.withOpacity(0.3)
+                      : Colors.white.withOpacity(0.05),
+                    width: rank == 1 ? 2 : 1,
+                  ),
+                ),
                 child: Padding(
                   padding: const EdgeInsets.all(12),
                   child: Row(
                     children: [
                       // Rank
                       Container(
-                        width: 40,
-                        height: 40,
+                        width: 44,
+                        height: 44,
                         decoration: BoxDecoration(
-                          color: rankColor.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: rankColor.withOpacity(0.3)),
+                          color: rankColor.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: rankColor.withOpacity(0.3),
+                            width: 2,
+                          ),
                         ),
                         child: Center(
                           child: rank <= 3 
-                            ? Icon(rankIcon, color: rankColor, size: 20)
+                            ? Icon(rankIcon, color: rankColor, size: 24)
                             : Text(
                                 rank.toString(),
                                 style: TextStyle(
@@ -235,7 +280,7 @@ class TeamStandings extends StatelessWidget {
                           color: pointDiff >= 0 
                             ? AppTheme.accentGreen.withOpacity(0.15) 
                             : AppTheme.accentRed.withOpacity(0.15),
-                          borderRadius: BorderRadius.circular(6),
+                          borderRadius: BorderRadius.circular(8),
                           border: Border.all(
                             color: pointDiff >= 0 
                               ? AppTheme.accentGreen.withOpacity(0.3) 
@@ -260,6 +305,53 @@ class TeamStandings extends StatelessWidget {
             },
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildDivisionTab(String division, IconData icon, Color color) {
+    final isSelected = selectedDivision == division;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          setState(() {
+            selectedDivision = division;
+          });
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: isSelected 
+              ? color.withOpacity(0.1)
+              : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isSelected 
+                ? color.withOpacity(0.5)
+                : Colors.white.withOpacity(0.05),
+              width: isSelected ? 2 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                color: isSelected ? color : AppTheme.textMuted,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                division,
+                style: TextStyle(
+                  color: isSelected ? AppTheme.textPrimary : AppTheme.textMuted,
+                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

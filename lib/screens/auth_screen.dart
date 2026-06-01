@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../theme/app_theme.dart';
-import '../main.dart'; 
+import '../main.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -12,38 +12,82 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
+  final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   bool isLoading = false;
   bool isLogin = true;
 
   Future<void> _authenticate() async {
-    if (_emailController.text.trim().isEmpty || _passwordController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill in all fields')),
-      );
-      return;
+    String loginInput = _emailController.text.trim();
+    
+    if (isLogin) {
+      // Login - username or email
+      if (loginInput.isEmpty || _passwordController.text.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please fill in all fields')),
+        );
+        return;
+      }
+    } else {
+      // Sign up - email, password, and username
+      if (_emailController.text.trim().isEmpty || 
+          _passwordController.text.trim().isEmpty ||
+          _usernameController.text.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please fill in all fields')),
+        );
+        return;
+      }
     }
 
     setState(() => isLoading = true);
 
     try {
+      UserCredential cred;
+      String emailToUse = loginInput;
+      
+      // Check if input contains @ (it's an email)
+      bool isEmail = loginInput.contains('@');
+      
+      // If it's not an email, look up the email from Firestore
+      if (isLogin && !isEmail) {
+        
+        // Query Firestore for the username
+        final querySnapshot = await FirebaseFirestore.instance
+            .collection('users')
+            .where('username', isEqualTo: loginInput)
+            .get();
+        
+        if (querySnapshot.docs.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Username not found')),
+          );
+          setState(() => isLoading = false);
+          return;
+        }
+        
+        // Get the email from the user document
+        emailToUse = querySnapshot.docs.first['email'];
+      }
+      
       if (isLogin) {
-        // Login
-        await FirebaseAuth.instance.signInWithEmailAndPassword(
-          email: _emailController.text.trim(),
+        // Login with email
+        cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
+          email: emailToUse,
           password: _passwordController.text.trim(),
         );
       } else {
-        // Sign up - default to sub admin role
-        final cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        // Sign up with email and password
+        cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
           email: _emailController.text.trim(),
           password: _passwordController.text.trim(),
         );
         
-        // Store user role (default: sub_admin)
+        // Store user data including username
         await FirebaseFirestore.instance.collection('users').doc(cred.user!.uid).set({
           'email': _emailController.text.trim(),
+          'username': _usernameController.text.trim(),
           'role': 'sub_admin',
           'createdAt': FieldValue.serverTimestamp(),
         });
@@ -116,23 +160,34 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    const Text(
-                      'Sign in to continue',
-                      style: TextStyle(
+                    Text(
+                      isLogin ? 'Sign in with email or username' : 'Create your account',
+                      style: const TextStyle(
                         fontSize: 14,
                         color: AppTheme.textSecondary,
                       ),
                     ),
                     const SizedBox(height: 32),
                     
-                    // Email
+                    // Username (only for sign up)
+                    if (!isLogin)
+                      TextField(
+                        controller: _usernameController,
+                        decoration: const InputDecoration(
+                          labelText: 'Username',
+                          prefixIcon: Icon(Icons.person),
+                        ),
+                      ),
+                    if (!isLogin) const SizedBox(height: 16),
+                    
+                    // Email or Username (for login) / Email (for sign up)
                     TextField(
                       controller: _emailController,
-                      decoration: const InputDecoration(
-                        labelText: 'Email',
-                        prefixIcon: Icon(Icons.email),
+                      decoration: InputDecoration(
+                        labelText: isLogin ? 'Email or Username' : 'Email',
+                        prefixIcon: const Icon(Icons.email),
                       ),
-                      keyboardType: TextInputType.emailAddress,
+                      keyboardType: isLogin ? TextInputType.text : TextInputType.emailAddress,
                     ),
                     const SizedBox(height: 16),
                     
