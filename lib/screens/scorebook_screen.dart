@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../theme/app_theme.dart';
 import '../main.dart';
-import 'package:flutter/material.dart';
+import '../services/active_game_service.dart';
 
 class ScorebookScreen extends StatefulWidget {
   final String homeTeamId;
@@ -27,8 +29,8 @@ class ScorebookScreen extends StatefulWidget {
 class _ScorebookScreenState extends State<ScorebookScreen> {
   int homeScore = 0;
   int awayScore = 0;
-  int homeTimeouts = 2;
-  int awayTimeouts = 2;
+  int homeTimeouts = 1;
+  int awayTimeouts = 1;
   int quarter = 1;
   int homeTeamFouls = 0;
   int awayTeamFouls = 0;
@@ -50,94 +52,344 @@ class _ScorebookScreenState extends State<ScorebookScreen> {
   bool showSubstitutionMode = false;
   String? selectedSubstitutionPlayer;
   
-  // Store the game document ID for live updates
-  String? _gameId;
-
-  // Flag to prevent multiple dialog shows
   bool _isNavigatingBack = false;
+  bool _isLoading = true;
+  bool _isOffline = false;
+  bool _hasPendingWrites = false;
+  bool _isSubstituting = false;
+  StreamSubscription<DocumentSnapshot>? _connectionSubscription;
+
+  bool _showFoulWarning = false;
+  String? _foulWarningPlayerName;
+  int? _fouledOutPlayerId;
+  bool _showBonusAlert = false;
+  bool _homeInBonus = false;
+  bool _awayInBonus = false;
+
 
   @override
   void initState() {
     super.initState();
-    _initializeActivePlayers();
+    _loadGameData();
+    _checkConnectivity();
   }
 
-  void _handleBackNavigation(BuildContext context) async {
-  if (_isNavigatingBack) return;
-  _isNavigatingBack = true;
+  @override
+  void dispose() {
+    _connectionSubscription?.cancel();
+    super.dispose();
+  }
 
-  final confirmed = await showDialog<bool>(
-    context: context,
-    barrierDismissible: false,
-    builder: (context) => AlertDialog(
-      title: const Text(
-        '⚠️ Terminate Match?',
-        style: TextStyle(color: AppTheme.accentGold),
-      ),
-      content: const Text(
-        'Are you sure you want to terminate this match?\n\nAll game data will be deleted.',
-        style: TextStyle(fontSize: 16),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () {
-            Navigator.pop(context, false);
-          },
-          style: TextButton.styleFrom(
-            foregroundColor: AppTheme.accentBlue,
-          ),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () {
-            Navigator.pop(context, true);
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.red,
-          ),
-          child: const Text('Terminate Match'),
-        ),
-      ],
-    ),
-  );
-
-  _isNavigatingBack = false;
-
-  if (confirmed == true) {
-    await _deleteGameData();
+  void _checkFoulStatus(String playerId, String playerName, int fouls, bool isHome) {
+  // Check for foul trouble (4 fouls)
+  if (fouls == 4 && !_showFoulWarning) {
+    setState(() {
+      _showFoulWarning = true;
+      _foulWarningPlayerName = playerName;
+    });
     
-    // Navigate back to main.dart (ScorebookHome)
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (context) => const ScorebookHome()),
-      );
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '⚠️ FOUL TROUBLE: $playerName has 4 fouls!',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: AppTheme.accentGold,
+        duration: const Duration(seconds: 3),
+        action: SnackBarAction(
+          label: 'OK',
+          onPressed: () {
+            setState(() => _showFoulWarning = false);
+          },
+        ),
+      ),
+    );
+  }
+  
+  // Check for fouled out (5 fouls)
+  if (fouls >= 5) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '❌ FOULED OUT: $playerName ($fouls fouls) - Must be substituted!',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: AppTheme.accentRed,
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(
+          label: 'SUB NOW',
+          onPressed: () {
+            // Auto-open substitution mode
+            setState(() {
+              showSubstitutionMode = true;
+              selectedSubstitutionPlayer = playerId;
+            });
+          },
+        ),
+      ),
+    );
+  }
+  
+  // Check for team bonus (7+ team fouls per quarter)
+  _checkTeamBonus(isHome);
+}
+
+void _checkTeamBonus(bool isHome) {
+  final teamFouls = isHome ? homeTeamFouls : awayTeamFouls;
+  final wasInBonus = isHome ? _homeInBonus : _awayInBonus;
+  final isInBonus = teamFouls >= 5;
+  
+  if (isInBonus && !wasInBonus) {
+    if (isHome) {
+      setState(() => _homeInBonus = true);
+    } else {
+      setState(() => _awayInBonus = true);
     }
   }
 }
 
-  Future<void> _deleteGameData() async {
-  // Delete game document
-  await FirebaseFirestore.instance
-      .collection('games')
-      .doc(widget.gameId)
-      .delete();
-  
-  // Delete all player stats for this game
-  final statsSnapshot = await FirebaseFirestore.instance
-      .collection('player_stats')
-      .where('gameId', isEqualTo: widget.gameId)
-      .get();
-  
-  for (var doc in statsSnapshot.docs) {
-    await doc.reference.delete();
+  void _checkConnectivity() {
+    _connectionSubscription = FirebaseFirestore.instance
+        .collection('games')
+        .doc(widget.gameId)
+        .snapshots()
+        .listen((event) {
+      if (_isOffline && mounted) {
+        setState(() => _isOffline = false);
+        _showOnlineSnackbar();
+      }
+    }, onError: (error) {
+      if (mounted) {
+        setState(() => _isOffline = true);
+      }
+    });
   }
-  
-  debugPrint('🗑️ Game data deleted for game: ${widget.gameId}');
-}
+
+  void _showOnlineSnackbar() {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.wifi, color: Colors.white, size: 16),
+              SizedBox(width: 8),
+              Text('Connection restored - Syncing data...'),
+            ],
+          ),
+          backgroundColor: AppTheme.accentGreen,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _showOfflineSnackbar() {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.wifi_off, color: Colors.white, size: 16),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text('Offline Mode - Data will sync when connection returns'),
+              ),
+            ],
+          ),
+          backgroundColor: AppTheme.accentGold,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  Future<void> _saveDataWithOfflineSupport({
+    required String path,
+    required Map<String, dynamic> data,
+    bool isUpdate = false,
+    String? documentId,
+  }) async {
+    try {
+      if (isUpdate && documentId != null) {
+        await FirebaseFirestore.instance
+            .collection(path)
+            .doc(documentId)
+            .update(data);
+      } else if (documentId != null) {
+        await FirebaseFirestore.instance
+            .collection(path)
+            .doc(documentId)
+            .set(data);
+      } else {
+        await FirebaseFirestore.instance.collection(path).add(data);
+      }
+      
+      if (_isOffline && mounted) {
+        setState(() => _isOffline = false);
+      }
+    } catch (e) {
+      if (!_isOffline && mounted) {
+        setState(() => _isOffline = true);
+        _showOfflineSnackbar();
+      }
+    }
+  }
+
+  Future<void> _loadGameData() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final gameDoc = await FirebaseFirestore.instance
+          .collection('games')
+          .doc(widget.gameId)
+          .get();
+
+      if (gameDoc.exists) {
+        final data = gameDoc.data() as Map<String, dynamic>;
+        setState(() {
+          homeScore = data['homeScore'] ?? 0;
+          awayScore = data['awayScore'] ?? 0;
+          quarter = data['quarter'] ?? 1;
+          
+          if (quarter <= 2) {
+            homeTimeouts = data['homeTimeouts'] ?? 1;
+            awayTimeouts = data['awayTimeouts'] ?? 1;
+          } else if (quarter <= 4) {
+            homeTimeouts = data['homeTimeouts'] ?? 2;
+            awayTimeouts = data['awayTimeouts'] ?? 2;
+          } else {
+            homeTimeouts = data['homeTimeouts'] ?? 1;
+            awayTimeouts = data['awayTimeouts'] ?? 1;
+          }
+          
+          homeTeamFouls = data['homeTeamFouls'] ?? 0;
+          awayTeamFouls = data['awayTeamFouls'] ?? 0;
+
+            _homeInBonus = homeTeamFouls >= 5;
+            _awayInBonus = awayTeamFouls >= 5;
+        });
+      }
+
+      final statsSnapshot = await FirebaseFirestore.instance
+          .collection('player_stats')
+          .where('gameId', isEqualTo: widget.gameId)
+          .get();
+
+      for (var doc in statsSnapshot.docs) {
+        final stat = doc.data();
+        final playerId = stat['playerId'];
+        final teamId = stat['teamId'];
+        final fouls = stat['fouls'] ?? 0;
+        final q1 = stat['quarter1'] ?? 0;
+        final q2 = stat['quarter2'] ?? 0;
+        final q3 = stat['quarter3'] ?? 0;
+        final q4 = stat['quarter4'] ?? 0;
+
+        setState(() {
+          playerFouls[playerId] = fouls;
+          
+          if (teamId == widget.homeTeamId) {
+            if (q1 > 0) homePoints1Q[playerId] = q1;
+            if (q2 > 0) homePoints2Q[playerId] = q2;
+            if (q3 > 0) homePoints3Q[playerId] = q3;
+            if (q4 > 0) homePoints4Q[playerId] = q4;
+          } else {
+            if (q1 > 0) awayPoints1Q[playerId] = q1;
+            if (q2 > 0) awayPoints2Q[playerId] = q2;
+            if (q3 > 0) awayPoints3Q[playerId] = q3;
+            if (q4 > 0) awayPoints4Q[playerId] = q4;
+          }
+        });
+      }
+
+    } catch (e) {
+      setState(() => _isOffline = true);
+    }
+    
+    await _initializeActivePlayers();
+    
+    setState(() {
+      _isLoading = false;
+    });
+  }
+
+  void _handleBackNavigation(BuildContext context) async {
+    if (_isNavigatingBack) return;
+    _isNavigatingBack = true;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text(
+          '⚠️ Terminate Match?',
+          style: TextStyle(color: AppTheme.accentGold),
+        ),
+        content: const Text(
+          'Are you sure you want to terminate this match?\n\nAll game data will be deleted.',
+          style: TextStyle(fontSize: 16),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context, false);
+            },
+            style: TextButton.styleFrom(
+              foregroundColor: AppTheme.accentBlue,
+            ),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context, true);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+            ),
+            child: const Text('Terminate Match'),
+          ),
+        ],
+      ),
+    );
+
+    _isNavigatingBack = false;
+
+    if (confirmed == true) {
+      await _deleteGameData();
+      
+      if (mounted) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (context) => const ScorebookHome()),
+        );
+      }
+    }
+  }
+
+  Future<void> _deleteGameData() async {
+    await FirebaseFirestore.instance
+        .collection('games')
+        .doc(widget.gameId)
+        .delete();
+    
+    final statsSnapshot = await FirebaseFirestore.instance
+        .collection('player_stats')
+        .where('gameId', isEqualTo: widget.gameId)
+        .get();
+    
+    for (var doc in statsSnapshot.docs) {
+      await doc.reference.delete();
+    }
+  }
+
   Widget _buildLandscapeLayout() {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    
     return Row(
       children: [
-        // HOME TEAM SIDE
         Expanded(
           child: _buildTeamSide(
             teamId: widget.homeTeamId,
@@ -152,7 +404,6 @@ class _ScorebookScreenState extends State<ScorebookScreen> {
           ),
         ),
         
-        // CENTER CONTROLS
         Container(
           width: 50,
           color: AppTheme.primaryDark,
@@ -193,7 +444,6 @@ class _ScorebookScreenState extends State<ScorebookScreen> {
           ),
         ),
         
-        // AWAY TEAM SIDE
         Expanded(
           child: _buildTeamSide(
             teamId: widget.awayTeamId,
@@ -212,98 +462,132 @@ class _ScorebookScreenState extends State<ScorebookScreen> {
   }
 
   @override
-Widget build(BuildContext context) {
-  final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
-  
-  return WillPopScope(
-    onWillPop: () async {
-      _handleBackNavigation(context);
-      return false; // Prevent default back navigation
-    },
-    child: Scaffold(
-      appBar: AppBar(
-        title: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.05),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: quarter >= 5 ? AppTheme.accentGold.withOpacity(0.5) : Colors.white10,
+  Widget build(BuildContext context) {
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    
+    return WillPopScope(
+      onWillPop: () async {
+        _handleBackNavigation(context);
+        return false;
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: quarter >= 5 ? AppTheme.accentGold.withOpacity(0.5) : Colors.white10,
+                  ),
+                ),
+                child: Text(
+                  quarter >= 5 ? 'OT #${quarter - 4}' : 'Q$quarter',
+                  style: TextStyle(
+                    fontSize: isLandscape ? 14 : 12,
+                    fontWeight: FontWeight.w700,
+                    color: quarter >= 5 ? AppTheme.accentGold : AppTheme.textPrimary,
+                  ),
                 ),
               ),
-              child: Text(
-                quarter >= 5 ? 'OT #${quarter - 4}' : 'Q$quarter',
-                style: TextStyle(
-                  fontSize: isLandscape ? 14 : 12,
-                  fontWeight: FontWeight.w700,
-                  color: quarter >= 5 ? AppTheme.accentGold : AppTheme.textPrimary,
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppTheme.accentGold.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppTheme.accentGold.withOpacity(0.3)),
+                ),
+                child: Text(
+                  '$homeScore - $awayScore',
+                  style: TextStyle(
+                    fontSize: isLandscape ? 18 : 16,
+                    fontWeight: FontWeight.w900,
+                    color: AppTheme.accentGold,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              decoration: BoxDecoration(
-                color: AppTheme.accentGold.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: AppTheme.accentGold.withOpacity(0.3)),
-              ),
-              child: Text(
-                '$homeScore - $awayScore',
-                style: TextStyle(
-                  fontSize: isLandscape ? 18 : 16,
-                  fontWeight: FontWeight.w900,
-                  color: AppTheme.accentGold,
-                ),
+            ],
+          ),
+          backgroundColor: AppTheme.primaryDark,
+          elevation: 0,
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    widget.homeTeamName,
+                    style: TextStyle(
+                      fontSize: isLandscape ? 10 : 8,
+                      color: AppTheme.homeTeam,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    widget.awayTeamName,
+                    style: TextStyle(
+                      fontSize: isLandscape ? 10 : 8,
+                      color: AppTheme.awayTeam,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
         ),
-        backgroundColor: AppTheme.primaryDark,
-        elevation: 0,
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  widget.homeTeamName,
-                  style: TextStyle(
-                    fontSize: isLandscape ? 10 : 8,
-                    color: AppTheme.homeTeam,
-                    fontWeight: FontWeight.w600,
-                  ),
+        body: Column(
+          children: [
+            if (_isOffline)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                color: AppTheme.accentGold.withOpacity(0.9),
+                child: Row(
+                  children: [
+                    const Icon(Icons.wifi_off, color: Colors.white, size: 16),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'Offline Mode - Changes will sync when connection returns',
+                        style: TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
                 ),
-                Text(
-                  widget.awayTeamName,
-                  style: TextStyle(
-                    fontSize: isLandscape ? 10 : 8,
-                    color: AppTheme.awayTeam,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
+              ),
+            Expanded(
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : (isLandscape ? _buildLandscapeLayout() : _buildPortraitLayout()),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
-      body: isLandscape
-        ? _buildLandscapeLayout()
-        : _buildPortraitLayout(),
-    ),
-  );
-}
+    );
+  }
 
-  // NEW: Portrait layout method
   Widget _buildPortraitLayout() {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    
     return Column(
       children: [
-        // Home team
         Expanded(
           child: _buildTeamSide(
             teamId: widget.homeTeamId,
@@ -318,7 +602,6 @@ Widget build(BuildContext context) {
           ),
         ),
         
-        // Center controls (horizontal in portrait)
         Container(
           height: 50,
           color: AppTheme.primaryDark,
@@ -351,7 +634,6 @@ Widget build(BuildContext context) {
           ),
         ),
         
-        // Away team
         Expanded(
           child: _buildTeamSide(
             teamId: widget.awayTeamId,
@@ -369,7 +651,6 @@ Widget build(BuildContext context) {
     );
   }
 
-  // NEW: Portrait button helper
   Widget _buildPortraitButton({
     required IconData icon,
     required Color color,
@@ -439,7 +720,6 @@ Widget build(BuildContext context) {
   }) {
     return Column(
       children: [
-        // Header
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
@@ -480,6 +760,25 @@ Widget build(BuildContext context) {
                   color: AppTheme.textPrimary,
                 ),
               ),
+
+              if ((isHome && _homeInBonus) || (!isHome && _awayInBonus))
+  Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(
+      color: AppTheme.accentBlue.withOpacity(0.2),
+      borderRadius: BorderRadius.circular(4),
+      border: Border.all(color: AppTheme.accentBlue),
+    ),
+    child: const Text(
+      'PENALTY',
+      style: TextStyle(
+        fontSize: 10,
+        fontWeight: FontWeight.w700,
+        color: AppTheme.accentBlue,
+      ),
+    ),
+  ),
+
               Row(
                 children: [
                   const Text(
@@ -491,7 +790,7 @@ Widget build(BuildContext context) {
                     ),
                   ),
                   const SizedBox(width: 6),
-                  for (int i = 0; i < (quarter <= 2 ? 2 : 3); i++)
+                  for (int i = 0; i < (quarter <= 2 ? 1 : 2); i++)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 2),
                       child: Icon(
@@ -506,7 +805,6 @@ Widget build(BuildContext context) {
           ),
         ),
         
-        // Players list
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance
@@ -530,7 +828,6 @@ Widget build(BuildContext context) {
               }
               
               final players = snapshot.data!.docs;
-              // Sort players: active first, then inactive
               final sortedPlayers = _sortPlayersByStatus(players, isHome);
               
               return ListView.builder(
@@ -572,7 +869,6 @@ Widget build(BuildContext context) {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          // Player info (not clickable)
                           Expanded(
                             flex: 3,
                             child: Row(
@@ -615,7 +911,6 @@ Widget build(BuildContext context) {
                             ),
                           ),
                           
-                          // IN/OUT label (clickable)
                           GestureDetector(
                             onTap: () {
                               _toggleSubstitution(playerId, isHome);
@@ -637,7 +932,6 @@ Widget build(BuildContext context) {
                             ),
                           ),
                           
-                          // Fouls
                           Expanded(
                             flex: 2,
                             child: Row(
@@ -658,7 +952,6 @@ Widget build(BuildContext context) {
                             ),
                           ),
                           
-                          // Points
                           Container(
                             width: 28,
                             padding: const EdgeInsets.symmetric(vertical: 2),
@@ -677,7 +970,6 @@ Widget build(BuildContext context) {
                             ),
                           ),
                           
-                          // Scoring buttons
                           Expanded(
                             flex: 3,
                             child: Row(
@@ -712,7 +1004,6 @@ Widget build(BuildContext context) {
           ),
         ),
         
-        // Team fouls footer
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           decoration: BoxDecoration(
@@ -787,7 +1078,7 @@ Widget build(BuildContext context) {
                     ),
                     child: IconButton(
                       icon: const Icon(Icons.pause, color: AppTheme.accentBlue, size: 18),
-                      onPressed: () {
+                      onPressed: () async {
                         setState(() {
                           if (isHome && homeTimeouts > 0) {
                             homeTimeouts--;
@@ -795,6 +1086,8 @@ Widget build(BuildContext context) {
                             awayTimeouts--;
                           }
                         });
+                        await _updateGameData();
+                        await _saveActivePlayersToFirestore();
                       },
                     ),
                   ),
@@ -835,7 +1128,6 @@ Widget build(BuildContext context) {
   }
 
   List<QueryDocumentSnapshot> _sortPlayersByStatus(List<QueryDocumentSnapshot> players, bool isHome) {
-    // Create a list of players with their active status
     List<Map<String, dynamic>> sortedPlayers = players.map((player) {
       final playerId = player.id;
       final isActive = isHome 
@@ -847,19 +1139,16 @@ Widget build(BuildContext context) {
       };
     }).toList();
     
-    // Sort: active players first, then inactive
     sortedPlayers.sort((a, b) {
       if (a['isActive'] && !b['isActive']) return -1;
       if (!a['isActive'] && b['isActive']) return 1;
       return 0;
     });
     
-    // Return only the documents
     return sortedPlayers.map((item) => item['doc'] as QueryDocumentSnapshot).toList();
   }
 
-  void _initializeActivePlayers() async {
-    // Get all players for both teams
+  Future<void> _initializeActivePlayers() async {
     final homeSnapshot = await FirebaseFirestore.instance
         .collection('teams')
         .doc(widget.homeTeamId)
@@ -872,74 +1161,138 @@ Widget build(BuildContext context) {
         .collection('players')
         .get();
     
+    final gameDoc = await FirebaseFirestore.instance
+        .collection('games')
+        .doc(widget.gameId)
+        .get();
+    
+    List<String> homePlayerIds = homeSnapshot.docs.map((doc) => doc.id).toList();
+    List<String> awayPlayerIds = awaySnapshot.docs.map((doc) => doc.id).toList();
+    
+    Set<String> savedHomeActive = {};
+    Set<String> savedAwayActive = {};
+    
+    if (gameDoc.exists && gameDoc.data() != null) {
+      final data = gameDoc.data() as Map<String, dynamic>;
+      if (data['activeHomePlayers'] != null) {
+        savedHomeActive = Set<String>.from(List<String>.from(data['activeHomePlayers']));
+      }
+      if (data['activeAwayPlayers'] != null) {
+        savedAwayActive = Set<String>.from(List<String>.from(data['activeAwayPlayers']));
+      }
+    }
+    
     setState(() {
-      // Get all player IDs
-      List<String> homePlayerIds = homeSnapshot.docs.map((doc) => doc.id).toList();
-      List<String> awayPlayerIds = awaySnapshot.docs.map((doc) => doc.id).toList();
-      
-      // Take first 5 (or all if less than 5) - NO SHUFFLE
-      activeHomePlayers = Set.from(homePlayerIds.take(5));
-      activeAwayPlayers = Set.from(awayPlayerIds.take(5));
-    });
-  }
-
-  void _toggleSubstitution(String playerId, bool isHome) {
-    setState(() {
-      if (isHome) {
-        if (activeHomePlayers.contains(playerId)) {
-          // Sub OUT
-          activeHomePlayers.remove(playerId);
-        } else {
-          // Sub IN
-          if (activeHomePlayers.length < 5) {
-            activeHomePlayers.add(playerId);
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: const Text('⚠️ 5 players already on court! Sub out someone first.'),
-                backgroundColor: AppTheme.accentGold,
-                duration: const Duration(seconds: 2),
-              ),
-            );
-          }
-        }
+      if (savedHomeActive.isNotEmpty) {
+        activeHomePlayers = savedHomeActive;
       } else {
-        // Away team
-        if (activeAwayPlayers.contains(playerId)) {
-          activeAwayPlayers.remove(playerId);
-        } else {
-          if (activeAwayPlayers.length < 5) {
-            activeAwayPlayers.add(playerId);
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: const Text('⚠️ 5 players already on court! Sub out someone first.'),
-                backgroundColor: AppTheme.accentGold,
-                duration: const Duration(seconds: 2),
-              ),
-            );
-          }
-        }
+        activeHomePlayers = Set.from(homePlayerIds.take(5));
+      }
+      
+      if (savedAwayActive.isNotEmpty) {
+        activeAwayPlayers = savedAwayActive;
+      } else {
+        activeAwayPlayers = Set.from(awayPlayerIds.take(5));
       }
     });
   }
 
-  bool _isCourtFull(bool isHome) {
-    return isHome ? activeHomePlayers.length >= 5 : activeAwayPlayers.length >= 5;
+  Future<void> _saveActivePlayersToFirestore() async {
+    await _saveDataWithOfflineSupport(
+      path: 'games',
+      data: {
+        'activeHomePlayers': activeHomePlayers.toList(),
+        'activeAwayPlayers': activeAwayPlayers.toList(),
+      },
+      isUpdate: true,
+      documentId: widget.gameId,
+    );
   }
 
-  void _addScore(String playerId, int points, bool isHome) {
-    // Check if player is active (ALWAYS enforce)
+  Future<void> _updateGameData() async {
+    await _saveDataWithOfflineSupport(
+      path: 'games',
+      data: {
+        'homeScore': homeScore,
+        'awayScore': awayScore,
+        'quarter': quarter,
+        'homeTimeouts': homeTimeouts,
+        'awayTimeouts': awayTimeouts,
+        'homeTeamFouls': homeTeamFouls,
+        'awayTeamFouls': awayTeamFouls,
+      },
+      isUpdate: true,
+      documentId: widget.gameId,
+    );
+  }
+
+  Future<void> _toggleSubstitution(String playerId, bool isHome) async {
+    if (_isSubstituting) return;
+    
+    setState(() {
+      _isSubstituting = true;
+    });
+    
+    try {
+      setState(() {
+        if (isHome) {
+          if (activeHomePlayers.contains(playerId)) {
+            activeHomePlayers.remove(playerId);
+          } else {
+            if (activeHomePlayers.length < 5) {
+              activeHomePlayers.add(playerId);
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('⚠️ 5 players already on court! Sub out someone first.'),
+                  backgroundColor: AppTheme.accentGold,
+                  duration: Duration(seconds: 2),
+                ),
+              );
+              return;
+            }
+          }
+        } else {
+          if (activeAwayPlayers.contains(playerId)) {
+            activeAwayPlayers.remove(playerId);
+          } else {
+            if (activeAwayPlayers.length < 5) {
+              activeAwayPlayers.add(playerId);
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('⚠️ 5 players already on court! Sub out someone first.'),
+                  backgroundColor: AppTheme.accentGold,
+                  duration: Duration(seconds: 2),
+                ),
+              );
+              return;
+            }
+          }
+        }
+      });
+      
+      await _saveActivePlayersToFirestore();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubstituting = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _addScore(String playerId, int points, bool isHome) async {
     final isActive = isHome 
       ? activeHomePlayers.contains(playerId) 
       : activeAwayPlayers.contains(playerId);
     
     if (!isActive) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Player is on bench! Click IN to substitute them.'),
+        const SnackBar(
+          content: Text('Player is on bench! Click IN to substitute them.'),
           backgroundColor: AppTheme.accentPurple,
-          duration: const Duration(seconds: 2),
+          duration: Duration(seconds: 2),
         ),
       );
       return;
@@ -952,10 +1305,7 @@ Widget build(BuildContext context) {
           case 2: homePoints2Q[playerId] = (homePoints2Q[playerId] ?? 0) + points; break;
           case 3: homePoints3Q[playerId] = (homePoints3Q[playerId] ?? 0) + points; break;
           case 4: homePoints4Q[playerId] = (homePoints4Q[playerId] ?? 0) + points; break;
-          case 5: // OT
-          case 6:
-          case 7:
-          case 8:
+          case 5: case 6: case 7: case 8:
             homePoints4Q[playerId] = (homePoints4Q[playerId] ?? 0) + points; break;
         }
         homeScore += points;
@@ -965,248 +1315,321 @@ Widget build(BuildContext context) {
           case 2: awayPoints2Q[playerId] = (awayPoints2Q[playerId] ?? 0) + points; break;
           case 3: awayPoints3Q[playerId] = (awayPoints3Q[playerId] ?? 0) + points; break;
           case 4: awayPoints4Q[playerId] = (awayPoints4Q[playerId] ?? 0) + points; break;
-          case 5: // OT
-          case 6:
-          case 7:
-          case 8:
+          case 5: case 6: case 7: case 8:
             awayPoints4Q[playerId] = (awayPoints4Q[playerId] ?? 0) + points; break;
         }
         awayScore += points;
       }
     });
     
-    // Save player stats in real-time
-    _savePlayerStatsInRealTime(playerId, points, isHome);
-    
-    // UPDATE GAME SCORE IN FIRESTORE
-    _updateGameScoreInRealTime();
+    await _savePlayerStatsInRealTime(playerId, points, isHome);
+    await _updateGameData();
   }
 
-  void _savePlayerStatsInRealTime(String playerId, int points, bool isHome) {
+  Future<void> _savePlayerStatsInRealTime(String playerId, int points, bool isHome) async {
     if (widget.gameId.isEmpty) return;
     
     final teamId = isHome ? widget.homeTeamId : widget.awayTeamId;
     
-    // Check if player stats document exists
-    FirebaseFirestore.instance
-        .collection('player_stats')
-        .where('gameId', isEqualTo: widget.gameId)
-        .where('playerId', isEqualTo: playerId)
-        .get()
-        .then((snapshot) {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('player_stats')
+          .where('gameId', isEqualTo: widget.gameId)
+          .where('playerId', isEqualTo: playerId)
+          .get();
+      
       if (snapshot.docs.isNotEmpty) {
-        // Update existing stats
         final doc = snapshot.docs.first;
         final currentPoints = doc['points'] ?? 0;
-        FirebaseFirestore.instance
-            .collection('player_stats')
-            .doc(doc.id)
-            .update({
+        final currentQ1 = doc['quarter1'] ?? 0;
+        final currentQ2 = doc['quarter2'] ?? 0;
+        final currentQ3 = doc['quarter3'] ?? 0;
+        final currentQ4 = doc['quarter4'] ?? 0;
+        
+        Map<String, dynamic> updateData = {
           'points': currentPoints + points,
-        });
+        };
+        
+        if (quarter == 1) updateData['quarter1'] = currentQ1 + points;
+        else if (quarter == 2) updateData['quarter2'] = currentQ2 + points;
+        else if (quarter == 3) updateData['quarter3'] = currentQ3 + points;
+        else if (quarter >= 4) updateData['quarter4'] = currentQ4 + points;
+        
+        await _saveDataWithOfflineSupport(
+          path: 'player_stats',
+          data: updateData,
+          isUpdate: true,
+          documentId: doc.id,
+        );
       } else {
-        // Create new stats document
-        FirebaseFirestore.instance
-            .collection('player_stats')
-            .add({
-          'gameId': widget.gameId,
-          'teamId': teamId,
-          'playerId': playerId,
-          'points': points,
-          'fouls': 0,
-          'quarter1': quarter == 1 ? points : 0,
-          'quarter2': quarter == 2 ? points : 0,
-          'quarter3': quarter == 3 ? points : 0,
-          'quarter4': quarter == 4 ? points : 0,
-          'isOvertime': quarter >= 5,
-        });
+        await _saveDataWithOfflineSupport(
+          path: 'player_stats',
+          data: {
+            'gameId': widget.gameId,
+            'teamId': teamId,
+            'playerId': playerId,
+            'points': points,
+            'fouls': 0,
+            'quarter1': quarter == 1 ? points : 0,
+            'quarter2': quarter == 2 ? points : 0,
+            'quarter3': quarter == 3 ? points : 0,
+            'quarter4': quarter >= 4 ? points : 0,
+            'isOvertime': quarter >= 5,
+          },
+        );
       }
-    });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Error saving player stats'),
+            backgroundColor: AppTheme.accentRed,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
   }
 
-  void _toggleFoul(String playerId, bool isFoul, bool isHome) {
-    setState(() {
-      if (isFoul) {
-        playerFouls[playerId] = (playerFouls[playerId] ?? 0) - 1;
-        if (playerFouls[playerId] == 0) playerFouls.remove(playerId);
-        if (isHome) homeTeamFouls--; else awayTeamFouls--;
-      } else {
-        playerFouls[playerId] = (playerFouls[playerId] ?? 0) + 1;
-        if (isHome) homeTeamFouls++; else awayTeamFouls++;
-      }
-    });
-    
-    // Save foul to Firestore in real-time
-    _saveFoulInRealTime(playerId, isFoul, isHome);
+  Future<void> _toggleFoul(String playerId, bool isFoul, bool isHome) async {
+  // Get player name for alerts
+  String playerName = '';
+  final playerDoc = await FirebaseFirestore.instance
+      .collection('teams')
+      .doc(isHome ? widget.homeTeamId : widget.awayTeamId)
+      .collection('players')
+      .doc(playerId)
+      .get();
+  if (playerDoc.exists) {
+    playerName = playerDoc['name'];
   }
+  
+  setState(() {
+    if (isFoul) {
+      playerFouls[playerId] = (playerFouls[playerId] ?? 0) - 1;
+      if (playerFouls[playerId] == 0) playerFouls.remove(playerId);
+      if (isHome) homeTeamFouls--; else awayTeamFouls--;
+    } else {
+      playerFouls[playerId] = (playerFouls[playerId] ?? 0) + 1;
+      if (isHome) homeTeamFouls++; else awayTeamFouls++;
+    }
+  });
+  
+  // Check foul status after update
+  final newFouls = playerFouls[playerId] ?? 0;
+  _checkFoulStatus(playerId, playerName, newFouls, isHome);
+  
+  await _saveFoulInRealTime(playerId, isFoul, isHome);
+  await _updateGameData();
+}
 
-  void _saveFoulInRealTime(String playerId, bool isFoul, bool isHome) {
+  Future<void> _saveFoulInRealTime(String playerId, bool isFoul, bool isHome) async {
     if (widget.gameId.isEmpty) return;
     
     final teamId = isHome ? widget.homeTeamId : widget.awayTeamId;
     
-    // Check if player stats document exists
-    FirebaseFirestore.instance
-        .collection('player_stats')
-        .where('gameId', isEqualTo: widget.gameId)
-        .where('playerId', isEqualTo: playerId)
-        .get()
-        .then((snapshot) {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('player_stats')
+          .where('gameId', isEqualTo: widget.gameId)
+          .where('playerId', isEqualTo: playerId)
+          .get();
+      
       if (snapshot.docs.isNotEmpty) {
-        // Update existing stats
         final doc = snapshot.docs.first;
         final currentFouls = doc['fouls'] ?? 0;
         final newFouls = isFoul ? currentFouls - 1 : currentFouls + 1;
-        FirebaseFirestore.instance
-            .collection('player_stats')
-            .doc(doc.id)
-            .update({
-          'fouls': newFouls >= 0 ? newFouls : 0,
-        });
+        await _saveDataWithOfflineSupport(
+          path: 'player_stats',
+          data: {'fouls': newFouls >= 0 ? newFouls : 0},
+          isUpdate: true,
+          documentId: doc.id,
+        );
       } else {
-        // Create new stats document with foul
-        FirebaseFirestore.instance
-            .collection('player_stats')
-            .add({
-          'gameId': widget.gameId,
-          'teamId': teamId,
-          'playerId': playerId,
-          'points': 0,
-          'fouls': 1,
-          'quarter1': 0,
-          'quarter2': 0,
-          'quarter3': 0,
-          'quarter4': 0,
-          'isOvertime': quarter >= 5,
-        });
+        await _saveDataWithOfflineSupport(
+          path: 'player_stats',
+          data: {
+            'gameId': widget.gameId,
+            'teamId': teamId,
+            'playerId': playerId,
+            'points': 0,
+            'fouls': 1,
+            'quarter1': 0,
+            'quarter2': 0,
+            'quarter3': 0,
+            'quarter4': 0,
+            'isOvertime': quarter >= 5,
+          },
+        );
       }
-    });
+    } catch (e) {
+      // Silently handle error - offline mode will retry
+    }
   }
 
-  void _undoLastScore(String playerId, bool isHome) {
+  Future<void> _undoLastScore(String playerId, bool isHome) async {
+    int currentPlayerPoints = 0;
+    if (isHome) {
+      switch (quarter) {
+        case 1: currentPlayerPoints = homePoints1Q[playerId] ?? 0; break;
+        case 2: currentPlayerPoints = homePoints2Q[playerId] ?? 0; break;
+        case 3: currentPlayerPoints = homePoints3Q[playerId] ?? 0; break;
+        case 4: currentPlayerPoints = homePoints4Q[playerId] ?? 0; break;
+        default: currentPlayerPoints = homePoints4Q[playerId] ?? 0; break;
+      }
+    } else {
+      switch (quarter) {
+        case 1: currentPlayerPoints = awayPoints1Q[playerId] ?? 0; break;
+        case 2: currentPlayerPoints = awayPoints2Q[playerId] ?? 0; break;
+        case 3: currentPlayerPoints = awayPoints3Q[playerId] ?? 0; break;
+        case 4: currentPlayerPoints = awayPoints4Q[playerId] ?? 0; break;
+        default: currentPlayerPoints = awayPoints4Q[playerId] ?? 0; break;
+      }
+    }
+    
+    if (currentPlayerPoints < 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot undo - player has no points in this quarter'),
+          backgroundColor: AppTheme.accentGold,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    
+    if ((isHome && homeScore < 1) || (!isHome && awayScore < 1)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot undo - team score is already 0'),
+          backgroundColor: AppTheme.accentGold,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    
     setState(() {
       int pointsToRemove = 1;
       if (isHome) {
         switch (quarter) {
-          case 1: if ((homePoints1Q[playerId] ?? 0) >= pointsToRemove) homePoints1Q[playerId] = (homePoints1Q[playerId] ?? 0) - pointsToRemove; break;
-          case 2: if ((homePoints2Q[playerId] ?? 0) >= pointsToRemove) homePoints2Q[playerId] = (homePoints2Q[playerId] ?? 0) - pointsToRemove; break;
-          case 3: if ((homePoints3Q[playerId] ?? 0) >= pointsToRemove) homePoints3Q[playerId] = (homePoints3Q[playerId] ?? 0) - pointsToRemove; break;
-          case 4: if ((homePoints4Q[playerId] ?? 0) >= pointsToRemove) homePoints4Q[playerId] = (homePoints4Q[playerId] ?? 0) - pointsToRemove; break;
+          case 1: homePoints1Q[playerId] = (homePoints1Q[playerId] ?? 0) - pointsToRemove; break;
+          case 2: homePoints2Q[playerId] = (homePoints2Q[playerId] ?? 0) - pointsToRemove; break;
+          case 3: homePoints3Q[playerId] = (homePoints3Q[playerId] ?? 0) - pointsToRemove; break;
+          case 4: homePoints4Q[playerId] = (homePoints4Q[playerId] ?? 0) - pointsToRemove; break;
         }
         homeScore -= pointsToRemove;
       } else {
         switch (quarter) {
-          case 1: if ((awayPoints1Q[playerId] ?? 0) >= pointsToRemove) awayPoints1Q[playerId] = (awayPoints1Q[playerId] ?? 0) - pointsToRemove; break;
-          case 2: if ((awayPoints2Q[playerId] ?? 0) >= pointsToRemove) awayPoints2Q[playerId] = (awayPoints2Q[playerId] ?? 0) - pointsToRemove; break;
-          case 3: if ((awayPoints3Q[playerId] ?? 0) >= pointsToRemove) awayPoints3Q[playerId] = (awayPoints3Q[playerId] ?? 0) - pointsToRemove; break;
-          case 4: if ((awayPoints4Q[playerId] ?? 0) >= pointsToRemove) awayPoints4Q[playerId] = (awayPoints4Q[playerId] ?? 0) - pointsToRemove; break;
+          case 1: awayPoints1Q[playerId] = (awayPoints1Q[playerId] ?? 0) - pointsToRemove; break;
+          case 2: awayPoints2Q[playerId] = (awayPoints2Q[playerId] ?? 0) - pointsToRemove; break;
+          case 3: awayPoints3Q[playerId] = (awayPoints3Q[playerId] ?? 0) - pointsToRemove; break;
+          case 4: awayPoints4Q[playerId] = (awayPoints4Q[playerId] ?? 0) - pointsToRemove; break;
         }
         awayScore -= pointsToRemove;
       }
     });
     
-    // Update Firestore stats
-    _updateStatsInRealTime(playerId, -1, isHome);
-    
-    // UPDATE GAME SCORE IN FIRESTORE
-    _updateGameScoreInRealTime();
+    await _updateStatsInRealTime(playerId, -1, isHome);
+    await _updateGameData();
   }
 
-  void _updateStatsInRealTime(String playerId, int pointsChange, bool isHome) {
+  Future<void> _updateStatsInRealTime(String playerId, int pointsChange, bool isHome) async {
     if (widget.gameId.isEmpty) return;
     
-    FirebaseFirestore.instance
-        .collection('player_stats')
-        .where('gameId', isEqualTo: widget.gameId)
-        .where('playerId', isEqualTo: playerId)
-        .get()
-        .then((snapshot) {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('player_stats')
+          .where('gameId', isEqualTo: widget.gameId)
+          .where('playerId', isEqualTo: playerId)
+          .get();
+      
       if (snapshot.docs.isNotEmpty) {
         final doc = snapshot.docs.first;
         final currentPoints = doc['points'] ?? 0;
-        FirebaseFirestore.instance
-            .collection('player_stats')
-            .doc(doc.id)
-            .update({
-          'points': currentPoints + pointsChange,
-        });
+        await _saveDataWithOfflineSupport(
+          path: 'player_stats',
+          data: {'points': currentPoints + pointsChange},
+          isUpdate: true,
+          documentId: doc.id,
+        );
       }
-    });
+    } catch (e) {
+      // Silently handle error - offline mode will retry
+    }
   }
 
-  void _nextQuarter() {
-    if (quarter < 4) {
-      setState(() {
-        quarter++;
-        if (quarter <= 2) {
-          homeTimeouts = 2;
-          awayTimeouts = 2;
-        } else {
-          homeTimeouts = 3;
-          awayTimeouts = 3;
-        }
-        homeTeamFouls = 0;
-        awayTeamFouls = 0;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Quarter $quarter started!'),
-          backgroundColor: AppTheme.accentBlue,
-        ),
-      );
-    } else if (quarter == 4 && homeScore == awayScore) {
-      // OT STARTS HERE
-      setState(() {
-        quarter = 5; // OT
-        homeTimeouts = 1; // 1 timeout per OT
-        awayTimeouts = 1;
-        homeTeamFouls = 0;
-        awayTeamFouls = 0;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('🚨 OVERTIME! 🚨'),
-          backgroundColor: AppTheme.accentGold,
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    } else if (quarter == 4 && homeScore != awayScore) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Game is in 4th quarter!'),
-          backgroundColor: AppTheme.accentGold,
-        ),
-      );
-    } else if (quarter >= 5) {
-      // Already in OT
-      setState(() {
-        quarter++;
+  Future<void> _nextQuarter() async {
+  if (quarter < 4) {
+    setState(() {
+      quarter++;
+      if (quarter <= 2) {
         homeTimeouts = 1;
         awayTimeouts = 1;
-        homeTeamFouls = 0;
-        awayTeamFouls = 0;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('OT #${quarter - 4} started!'),
-          backgroundColor: AppTheme.accentGold,
-        ),
-      );
-    }
-    
-    // Update Firestore with new quarter
-    if (widget.gameId.isNotEmpty) {
-      FirebaseFirestore.instance
-          .collection('games')
-          .doc(widget.gameId)
-          .update({
-        'quarter': quarter,
-      });
-    }
+      } else {
+        homeTimeouts = 2;
+        awayTimeouts = 2;
+      }
+      homeTeamFouls = 0;
+      awayTeamFouls = 0;
+      // RESET BONUS STATUS FOR NEW QUARTER
+      _homeInBonus = false;
+      _awayInBonus = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Quarter $quarter started! Team fouls reset.'),
+        backgroundColor: AppTheme.accentBlue,
+      ),
+    );
+  } else if (quarter == 4 && homeScore == awayScore) {
+    setState(() {
+      quarter = 5;
+      homeTimeouts = 1;
+      awayTimeouts = 1;
+      homeTeamFouls = 0;
+      awayTeamFouls = 0;
+      // RESET BONUS STATUS FOR OVERTIME
+      _homeInBonus = false;
+      _awayInBonus = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('🚨 OVERTIME! 🚨 Team fouls reset.'),
+        backgroundColor: AppTheme.accentGold,
+        duration: Duration(seconds: 3),
+      ),
+    );
+  } else if (quarter == 4 && homeScore != awayScore) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Game is in 4th quarter!'),
+        backgroundColor: AppTheme.accentGold,
+      ),
+    );
+  } else if (quarter >= 5) {
+    setState(() {
+      quarter++;
+      homeTimeouts = 1;
+      awayTimeouts = 1;
+      homeTeamFouls = 0;
+      awayTeamFouls = 0;
+      // RESET BONUS STATUS FOR NEXT OVERTIME
+      _homeInBonus = false;
+      _awayInBonus = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('OT #${quarter - 4} started! Team fouls reset.'),
+        backgroundColor: AppTheme.accentGold,
+      ),
+    );
   }
+  
+  await _updateGameData();
+}
 
   void _endGame() {
-    // Don't allow ending if game is tied
     if (homeScore == awayScore) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1266,7 +1689,6 @@ Widget build(BuildContext context) {
             onPressed: () async {
               Navigator.pop(context);
               
-              // Update game status to completed using widget.gameId
               await FirebaseFirestore.instance
                   .collection('games')
                   .doc(widget.gameId)
@@ -1274,13 +1696,13 @@ Widget build(BuildContext context) {
                 'status': 'completed',
               });
               
-              // Save final stats
               await _saveGameResults();
               
-              // Use the global navigator key instead of context
-              navigatorKey.currentState?.pushReplacement(
-                MaterialPageRoute(builder: (context) => const ScorebookHome()),
-              );
+              if (mounted) {
+                navigatorKey.currentState?.pushReplacement(
+                  MaterialPageRoute(builder: (context) => const ScorebookHome()),
+                );
+              }
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppTheme.accentRed,
@@ -1290,18 +1712,6 @@ Widget build(BuildContext context) {
         ],
       ),
     );
-  }
-
-  void _updateGameScoreInRealTime() {
-    if (widget.gameId.isEmpty) return;
-    
-    FirebaseFirestore.instance
-        .collection('games')
-        .doc(widget.gameId)
-        .update({
-      'homeScore': homeScore,
-      'awayScore': awayScore,
-    });
   }
 
   Future<void> _saveGameResults() async {
@@ -1316,18 +1726,36 @@ Widget build(BuildContext context) {
                        (homePoints2Q[playerId] ?? 0) + 
                        (homePoints3Q[playerId] ?? 0) + 
                        (homePoints4Q[playerId] ?? 0);
-      await FirebaseFirestore.instance.collection('player_stats').add({
-        'gameId': widget.gameId,
-        'teamId': widget.homeTeamId,
-        'playerId': playerId,
-        'points': totalPoints,
-        'fouls': playerFouls[playerId] ?? 0,
-        'quarter1': homePoints1Q[playerId] ?? 0,
-        'quarter2': homePoints2Q[playerId] ?? 0,
-        'quarter3': homePoints3Q[playerId] ?? 0,
-        'quarter4': homePoints4Q[playerId] ?? 0,
-        'isOvertime': quarter >= 5,
-      });
+      
+      final existingStats = await FirebaseFirestore.instance
+          .collection('player_stats')
+          .where('gameId', isEqualTo: widget.gameId)
+          .where('playerId', isEqualTo: playerId)
+          .get();
+      
+      if (existingStats.docs.isNotEmpty) {
+        await existingStats.docs.first.reference.update({
+          'points': totalPoints,
+          'fouls': playerFouls[playerId] ?? 0,
+          'quarter1': homePoints1Q[playerId] ?? 0,
+          'quarter2': homePoints2Q[playerId] ?? 0,
+          'quarter3': homePoints3Q[playerId] ?? 0,
+          'quarter4': homePoints4Q[playerId] ?? 0,
+        });
+      } else {
+        await FirebaseFirestore.instance.collection('player_stats').add({
+          'gameId': widget.gameId,
+          'teamId': widget.homeTeamId,
+          'playerId': playerId,
+          'points': totalPoints,
+          'fouls': playerFouls[playerId] ?? 0,
+          'quarter1': homePoints1Q[playerId] ?? 0,
+          'quarter2': homePoints2Q[playerId] ?? 0,
+          'quarter3': homePoints3Q[playerId] ?? 0,
+          'quarter4': homePoints4Q[playerId] ?? 0,
+          'isOvertime': quarter >= 5,
+        });
+      }
     }
     
     Set<String> awayPlayers = {};
@@ -1341,18 +1769,36 @@ Widget build(BuildContext context) {
                        (awayPoints2Q[playerId] ?? 0) + 
                        (awayPoints3Q[playerId] ?? 0) + 
                        (awayPoints4Q[playerId] ?? 0);
-      await FirebaseFirestore.instance.collection('player_stats').add({
-        'gameId': widget.gameId,
-        'teamId': widget.awayTeamId,
-        'playerId': playerId,
-        'points': totalPoints,
-        'fouls': playerFouls[playerId] ?? 0,
-        'quarter1': awayPoints1Q[playerId] ?? 0,
-        'quarter2': awayPoints2Q[playerId] ?? 0,
-        'quarter3': awayPoints3Q[playerId] ?? 0,
-        'quarter4': awayPoints4Q[playerId] ?? 0,
-        'isOvertime': quarter >= 5,
-      });
+      
+      final existingStats = await FirebaseFirestore.instance
+          .collection('player_stats')
+          .where('gameId', isEqualTo: widget.gameId)
+          .where('playerId', isEqualTo: playerId)
+          .get();
+      
+      if (existingStats.docs.isNotEmpty) {
+        await existingStats.docs.first.reference.update({
+          'points': totalPoints,
+          'fouls': playerFouls[playerId] ?? 0,
+          'quarter1': awayPoints1Q[playerId] ?? 0,
+          'quarter2': awayPoints2Q[playerId] ?? 0,
+          'quarter3': awayPoints3Q[playerId] ?? 0,
+          'quarter4': awayPoints4Q[playerId] ?? 0,
+        });
+      } else {
+        await FirebaseFirestore.instance.collection('player_stats').add({
+          'gameId': widget.gameId,
+          'teamId': widget.awayTeamId,
+          'playerId': playerId,
+          'points': totalPoints,
+          'fouls': playerFouls[playerId] ?? 0,
+          'quarter1': awayPoints1Q[playerId] ?? 0,
+          'quarter2': awayPoints2Q[playerId] ?? 0,
+          'quarter3': awayPoints3Q[playerId] ?? 0,
+          'quarter4': awayPoints4Q[playerId] ?? 0,
+          'isOvertime': quarter >= 5,
+        });
+      }
     }
   }
 }
